@@ -1,7 +1,7 @@
 #!/bin/bash
 if [ $EUID -ne 0 ]; then
-    echo "[-] Please run this script with sudo"
-    exit 1
+	echo "[-] Please run this script with sudo"
+	exit 1
 fi
 
 # Default values
@@ -19,7 +19,7 @@ OS_NAME=$(uname -s)
 HOSTNAME=$(hostname)
 
 usage() {
-    cat <<EOF
+	cat <<EOF
 Usage: $0 --email-to <email_to> --email-from <email_from> [--cc-emails <cc_email1,cc_email2,...>] 
           [-w <seconds> | --cooldown-warning <seconds>] 
           [-c <seconds> | --cooldown-critical <seconds>] 
@@ -48,40 +48,58 @@ Examples:
   Custom cooldown and threshold:
     $0 --email-to admin@example.com --email-from support@example.com -w 7200 -c 3600 --threshold 90 / /mnt/vol_data_example
 EOF
-    exit 0
+	exit 0
 }
 
 # Parse arguments
 while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --email-to) EMAIL_TO="$2"; shift ;;
-        --email-from) EMAIL_FROM="$2"; shift ;;
-        --cc-emails) IFS=',' read -ra CC_EMAILS <<< "$2"; shift ;;
-        -w|--cooldown-warning) COOLDOWN_WARNING="$2"; shift ;;
-        -c|--cooldown-critical) COOLDOWN_CRITICAL="$2"; shift ;;
-        --threshold) THRESHOLD="$2"; shift ;;
-        --help) usage ;;
-        *) PATHS_TO_MONITOR+=("$1") ;;
-    esac
-    shift
+	case $1 in
+	--email-to)
+		EMAIL_TO="$2"
+		shift
+		;;
+	--email-from)
+		EMAIL_FROM="$2"
+		shift
+		;;
+	--cc-emails)
+		IFS=',' read -ra CC_EMAILS <<<"$2"
+		shift
+		;;
+	-w | --cooldown-warning)
+		COOLDOWN_WARNING="$2"
+		shift
+		;;
+	-c | --cooldown-critical)
+		COOLDOWN_CRITICAL="$2"
+		shift
+		;;
+	--threshold)
+		THRESHOLD="$2"
+		shift
+		;;
+	--help) usage ;;
+	*) PATHS_TO_MONITOR+=("$1") ;;
+	esac
+	shift
 done
 
 if [[ ${#CC_EMAILS[@]} -gt 0 && ${CC_EMAILS[0]} != "" ]]; then
-    cc_list=$(printf ', {"email": "%s"}' "${CC_EMAILS[@]}")
-    cc_list="[${cc_list:2}]"
+	cc_list=$(printf ', {"email": "%s"}' "${CC_EMAILS[@]}")
+	cc_list="[${cc_list:2}]"
 else
-    cc_list="[]"
+	cc_list="[]"
 fi
 
 # Validate required arguments
 if [[ -z "$EMAIL_TO" || -z "$EMAIL_FROM" || "${#PATHS_TO_MONITOR[@]}" -eq 0 ]]; then
-    usage
+	usage
 fi
 
 # Checking for required environment variables
 if [[ -z "$API_KEY" || -z "$TEMPLATE_ID" ]]; then
-    echo "$(date '+%Y/%m/%d %H:%M:%S') Missing required environment variables: API_KEY or TEMPLATE_ID" >> $INFO_FILE
-    exit 1
+	echo "$(date '+%Y/%m/%d %H:%M:%S') Missing required environment variables: API_KEY or TEMPLATE_ID" >>$INFO_FILE
+	exit 1
 fi
 
 # Ensure required files exist
@@ -90,15 +108,16 @@ fi
 [[ -f $EMAIL_TIMESTAMP_FILE ]] || touch $EMAIL_TIMESTAMP_FILE
 
 send_email_immediately() {
-    local alert_level=$1
-    local disk_usage=$2
-    local path=$3
-    
-    # Set alert time
-    alert_time=$(date '+%d-%m-%Y %H:%M')
-    
-    # Build dynamic template data
-    dynamic_template_data=$(cat <<EOF
+	local alert_level=$1
+	local disk_usage=$2
+	local path=$3
+
+	# Set alert time
+	alert_time=$(date '+%d-%m-%Y %H:%M')
+
+	# Build dynamic template data
+	dynamic_template_data=$(
+		cat <<EOF
 {
   "disk_usage": "$disk_usage",
   "alert_level": "$alert_level",
@@ -109,13 +128,14 @@ send_email_immediately() {
   "subject": "Disk Usage - $alert_level"
 }
 EOF
-    )
-    
-    # Build template data based on CC presence
-    if [[ ${#CC_EMAILS[@]} -gt 0 && ${CC_EMAILS[0]} != "" ]]; then
-        cc_list=$(printf ', {"email": "%s"}' "${CC_EMAILS[@]}")
-        cc_list="[${cc_list:2}]"
-        template_data=$(cat <<EOF
+	)
+
+	# Build template data based on CC presence
+	if [[ ${#CC_EMAILS[@]} -gt 0 && ${CC_EMAILS[0]} != "" ]]; then
+		cc_list=$(printf ', {"email": "%s"}' "${CC_EMAILS[@]}")
+		cc_list="[${cc_list:2}]"
+		template_data=$(
+			cat <<EOF
 {
   "personalizations": [{
     "to": [{"email": "$EMAIL_TO"}],
@@ -126,9 +146,10 @@ EOF
   "template_id": "$TEMPLATE_ID"
 }
 EOF
-        )
-    else
-        template_data=$(cat <<EOF
+		)
+	else
+		template_data=$(
+			cat <<EOF
 {
   "personalizations": [{
     "to": [{"email": "$EMAIL_TO"}],
@@ -138,62 +159,61 @@ EOF
   "template_id": "$TEMPLATE_ID"
 }
 EOF
-        )
-    fi
+		)
+	fi
 
-    # Send the email
-    response=$(curl -s -w "%{http_code}" -X POST https://api.sendgrid.com/v3/mail/send \
-      -H "Authorization: Bearer $API_KEY" \
-      -H "Content-Type: application/json" \
-      -d "$template_data")
+	# Send the email
+	response=$(curl -s -w "%{http_code}" -X POST https://api.sendgrid.com/v3/mail/send \
+		-H "Authorization: Bearer $API_KEY" \
+		-H "Content-Type: application/json" \
+		-d "$template_data")
 
-    # Get the HTTP status code
-    http_code="${response: -3}"
-    email_sent="Yes"
-    email_success=$([[ $http_code -eq 202 ]] && echo "True" || echo "False")
+	# Get the HTTP status code
+	http_code="${response: -3}"
+	email_sent="Yes"
+	email_success=$([[ $http_code -eq 202 ]] && echo "True" || echo "False")
 
-    if [[ $email_success == "True" ]]; then
-        sed -i "/^$alert_level:/d" $EMAIL_TIMESTAMP_FILE
-        echo "$alert_level:$(date +%s)" >> $EMAIL_TIMESTAMP_FILE
-    fi
+	if [[ $email_success == "True" ]]; then
+		sed -i "/^$alert_level:/d" $EMAIL_TIMESTAMP_FILE
+		echo "$alert_level:$(date +%s)" >>$EMAIL_TIMESTAMP_FILE
+	fi
 }
 
-
 create_log_message() {
-    echo "$(date '+%Y/%m/%d %H:%M:%S') [$type] Disk Usage: $current_disk_usage% Path: $path Email Sent: $email_sent Success: $email_success" >> $LOG_FILE
+	echo "$(date '+%Y/%m/%d %H:%M:%S') [$type] Disk Usage: $current_disk_usage% Path: $path Email Sent: $email_sent Success: $email_success" >>$LOG_FILE
 }
 
 # Main logic
 for path in "${PATHS_TO_MONITOR[@]}"; do
-    # Check disk usage
-    current_disk_usage=$(df -h "$path" | awk 'NR==2 {print $5}' | cut -d'%' -f1)
-    
-    type="Normal"
-    [[ $current_disk_usage -ge $THRESHOLD ]] && type="Warning"
-    [[ $current_disk_usage -ge 90 ]] && type="Critical"
-    
-    email_sent="No"
-    email_success="False"
+	# Check disk usage
+	current_disk_usage=$(df -h "$path" | awk 'NR==2 {print $5}' | cut -d'%' -f1)
 
-    last_email_sent=$(grep "^$type:" $EMAIL_TIMESTAMP_FILE | cut -d':' -f2)
-    [[ -z $last_email_sent ]] && last_email_sent=0
-    
-    current_time=$(date +%s)
-    time_diff=$((current_time - last_email_sent))
+	type="Normal"
+	[[ $current_disk_usage -ge $THRESHOLD ]] && type="Warning"
+	[[ $current_disk_usage -ge 90 ]] && type="Critical"
 
-    if [[ $type == "Critical" && $time_diff -ge $COOLDOWN_CRITICAL ]]; then
-        send_email_immediately "$type" "$current_disk_usage" "$path"
-    elif [[ $type == "Critical" ]]; then
-        cooldown_remaining=$((COOLDOWN_CRITICAL - time_diff))
-        echo "$(date '+%Y/%m/%d %H:%M:%S') [$type] Cooldown active for $cooldown_remaining seconds. Email not sent." >> $INFO_FILE
-    elif [[ $type == "Warning" && $time_diff -ge $COOLDOWN_WARNING ]]; then
-        send_email_immediately "$type" "$current_disk_usage" "$path"
-    elif [[ $type == "Warning" ]]; then
-        cooldown_remaining=$((COOLDOWN_WARNING - time_diff))
-        echo "$(date '+%Y/%m/%d %H:%M:%S') [$type] Cooldown active for $cooldown_remaining seconds. Email not sent." >> $INFO_FILE
-    fi
+	email_sent="No"
+	email_success="False"
 
-    create_log_message
+	last_email_sent=$(grep "^$type:" $EMAIL_TIMESTAMP_FILE | cut -d':' -f2)
+	[[ -z $last_email_sent ]] && last_email_sent=0
+
+	current_time=$(date +%s)
+	time_diff=$((current_time - last_email_sent))
+
+	if [[ $type == "Critical" && $time_diff -ge $COOLDOWN_CRITICAL ]]; then
+		send_email_immediately "$type" "$current_disk_usage" "$path"
+	elif [[ $type == "Critical" ]]; then
+		cooldown_remaining=$((COOLDOWN_CRITICAL - time_diff))
+		echo "$(date '+%Y/%m/%d %H:%M:%S') [$type] Cooldown active for $cooldown_remaining seconds. Email not sent." >>$INFO_FILE
+	elif [[ $type == "Warning" && $time_diff -ge $COOLDOWN_WARNING ]]; then
+		send_email_immediately "$type" "$current_disk_usage" "$path"
+	elif [[ $type == "Warning" ]]; then
+		cooldown_remaining=$((COOLDOWN_WARNING - time_diff))
+		echo "$(date '+%Y/%m/%d %H:%M:%S') [$type] Cooldown active for $cooldown_remaining seconds. Email not sent." >>$INFO_FILE
+	fi
+
+	create_log_message
 done
 
 exit 0

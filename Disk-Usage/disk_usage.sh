@@ -92,6 +92,21 @@ while [[ "$#" -gt 0 ]]; do
 	shift
 done
 
+# Validate the email service early
+case "$EMAIL_SERVICE" in
+SENDGRID)
+	# SendGrid-specific validation
+	[[ -z "$API_KEY" || -z "$TEMPLATE_ID" ]] && {
+		echo "Missing API_KEY or TEMPLATE_ID for SendGrid"
+		exit 1
+	}
+	;;
+*)
+	echo "Unsupported email service: $EMAIL_SERVICE"
+	exit 1
+	;;
+esac
+
 if [[ ${#CC_EMAILS[@]} -gt 0 && ${CC_EMAILS[0]} != "" ]]; then
 	cc_list=$(printf ', {"email": "%s"}' "${CC_EMAILS[@]}")
 	cc_list="[${cc_list:2}]"
@@ -109,27 +124,11 @@ fi
 [[ -f $INFO_FILE ]] || touch $INFO_FILE
 [[ -f $EMAIL_TIMESTAMP_FILE ]] || touch $EMAIL_TIMESTAMP_FILE
 
-# Validate email service and required parameters
-validate_email_service() {
-	case "$EMAIL_SERVICE" in
-	SENDGRID)
-		[[ -z "$API_KEY" || -z "$TEMPLATE_ID" ]] && {
-			echo "Missing API_KEY or TEMPLATE_ID for SendGrid"
-			exit 1
-		}
-		;;
-	*)
-		echo "Unsupported email service: $EMAIL_SERVICE"
-		exit 1
-		;;
-	esac
-}
-
 send_email_sendgrid() {
 	local alert_level=$1
 	local disk_usage=$2
 	local path=$3
-	
+
 	echo $API_KEY
 	echo $TEMPLATE_ID
 
@@ -191,9 +190,9 @@ EOF
 
 	# Get the HTTP status code
 	http_code="${response: -3}"
-	
+
 	if [[ $http_code -ne 202 ]]; then
-		echo "Failed to send email. HTTP status code: $http_code" >> $INFO_FILE
+		echo "Failed to send email. HTTP status code: $http_code" >>$INFO_FILE
 		continue
 	fi
 
@@ -231,12 +230,12 @@ send_email() {
 for path in "${PATHS_TO_MONITOR[@]}"; do
 	# Check disk usage
 	current_disk_usage=$(df -h "$path" | awk 'NR==2 {print $5}' | cut -d'%' -f1)
-	
+
 	# Check if disk usage is empty or not
 	if [[ -z "$current_disk_usage" ]]; then
-        echo "Error: Unable to retrieve disk usage for $path"
-        continue
-    fi
+		echo "Error: Unable to retrieve disk usage for $path"
+		continue
+	fi
 
 	type="Normal"
 	[[ $current_disk_usage -ge $THRESHOLD ]] && type="Warning"

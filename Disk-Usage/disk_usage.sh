@@ -230,9 +230,13 @@ send_email() {
 # Main logic
 for path in "${PATHS_TO_MONITOR[@]}"; do
 	# Check disk usage
-	# current_disk_usage=$(df -h "$path" | awk 'NR==2 {print $5}' | cut -d'%' -f1)
+	current_disk_usage=$(df -h "$path" | awk 'NR==2 {print $5}' | cut -d'%' -f1)
 	
-	current_disk_usage=90
+	# Check if disk usage is empty or not
+	if [[ -z "$current_disk_usage" ]]; then
+        echo "Error: Unable to retrieve disk usage for $path"
+        continue
+    fi
 
 	type="Normal"
 	[[ $current_disk_usage -ge $THRESHOLD ]] && type="Warning"

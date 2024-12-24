@@ -8,6 +8,9 @@ fi
 EMAIL_TO=""
 EMAIL_FROM=""
 CC_EMAILS=("")
+EMAIL_SERVICE="SENDGRID"
+API_KEY=${API_KEY:-""}
+TEMPLATE_ID=${TEMPLATE_ID:-""}
 THRESHOLD=80
 COOLDOWN_WARNING=3600
 COOLDOWN_CRITICAL=1800
@@ -23,7 +26,7 @@ usage() {
 Usage: $0 --email-to <email_to> --email-from <email_from> [--cc-emails <cc_email1,cc_email2,...>] 
           [-w <seconds> | --cooldown-warning <seconds>] 
           [-c <seconds> | --cooldown-critical <seconds>] 
-          [--threshold <percentage>] <paths_to_monitor...>
+          [--threshold <percentage>] [--email-service <service>] <paths_to_monitor...>
 
 Description:
 This script monitors specified file system paths and sends email notifications if disk usage exceeds a user-defined threshold. It integrates with the SendGrid API to send alerts using a dynamic email template.
@@ -36,6 +39,7 @@ Options:
   -w, --cooldown-warning  Set cooldown time for warning alerts in seconds (default: 3600).
   -c, --cooldown-critical Set cooldown time for critical alerts in seconds (default: 1800).
   --threshold         Set disk usage threshold as a percentage (default: 80).
+  --email-service     Specify the email service to use (default: SENDGRID). Future options: MAILGUN, GMAIL.
   --help              Display this help message and exit.
 
 Arguments:
@@ -78,11 +82,30 @@ while [[ "$#" -gt 0 ]]; do
 		THRESHOLD="$2"
 		shift
 		;;
+	--email-service)
+		EMAIL_SERVICE="$2"
+		shift
+		;;
 	--help) usage ;;
 	*) PATHS_TO_MONITOR+=("$1") ;;
 	esac
 	shift
 done
+
+# Validate the email service early
+case "$EMAIL_SERVICE" in
+SENDGRID)
+	# SendGrid-specific validation
+	[[ -z "$API_KEY" || -z "$TEMPLATE_ID" ]] && {
+		echo "Missing API_KEY or TEMPLATE_ID for SendGrid"
+		exit 1
+	}
+	;;
+*)
+	echo "Unsupported email service: $EMAIL_SERVICE"
+	exit 1
+	;;
+esac
 
 if [[ ${#CC_EMAILS[@]} -gt 0 && ${CC_EMAILS[0]} != "" ]]; then
 	cc_list=$(printf ', {"email": "%s"}' "${CC_EMAILS[@]}")
@@ -96,21 +119,18 @@ if [[ -z "$EMAIL_TO" || -z "$EMAIL_FROM" || "${#PATHS_TO_MONITOR[@]}" -eq 0 ]]; 
 	usage
 fi
 
-# Checking for required environment variables
-if [[ -z "$API_KEY" || -z "$TEMPLATE_ID" ]]; then
-	echo "$(date '+%Y/%m/%d %H:%M:%S') Missing required environment variables: API_KEY or TEMPLATE_ID" >>$INFO_FILE
-	exit 1
-fi
-
 # Ensure required files exist
 [[ -f $LOG_FILE ]] || touch $LOG_FILE
 [[ -f $INFO_FILE ]] || touch $INFO_FILE
 [[ -f $EMAIL_TIMESTAMP_FILE ]] || touch $EMAIL_TIMESTAMP_FILE
 
-send_email_immediately() {
+send_email_sendgrid() {
 	local alert_level=$1
 	local disk_usage=$2
 	local path=$3
+
+	echo $API_KEY
+	echo $TEMPLATE_ID
 
 	# Set alert time
 	alert_time=$(date '+%d-%m-%Y %H:%M')
@@ -170,6 +190,12 @@ EOF
 
 	# Get the HTTP status code
 	http_code="${response: -3}"
+
+	if [[ $http_code -ne 202 ]]; then
+		echo "Failed to send email. HTTP status code: $http_code" >>$INFO_FILE
+		continue
+	fi
+
 	email_sent="Yes"
 	email_success=$([[ $http_code -eq 202 ]] && echo "True" || echo "False")
 
@@ -183,10 +209,33 @@ create_log_message() {
 	echo "$(date '+%Y/%m/%d %H:%M:%S') [$type] Disk Usage: $current_disk_usage% Path: $path Email Sent: $email_sent Success: $email_success" >>$LOG_FILE
 }
 
+# Generic function to send email
+send_email() {
+	local alert_level="$1"
+	local disk_usage="$2"
+	local path="$3"
+
+	case "$EMAIL_SERVICE" in
+	SENDGRID)
+		send_email_sendgrid "$alert_level" "$disk_usage" "$path"
+		;;
+	*)
+		echo "Unsupported email service: $EMAIL_SERVICE"
+		exit 1
+		;;
+	esac
+}
+
 # Main logic
 for path in "${PATHS_TO_MONITOR[@]}"; do
 	# Check disk usage
 	current_disk_usage=$(df -h "$path" | awk 'NR==2 {print $5}' | cut -d'%' -f1)
+
+	# Check if disk usage is empty or not
+	if [[ -z "$current_disk_usage" ]]; then
+		echo "Error: Unable to retrieve disk usage for $path"
+		continue
+	fi
 
 	type="Normal"
 	[[ $current_disk_usage -ge $THRESHOLD ]] && type="Warning"
@@ -202,12 +251,12 @@ for path in "${PATHS_TO_MONITOR[@]}"; do
 	time_diff=$((current_time - last_email_sent))
 
 	if [[ $type == "Critical" && $time_diff -ge $COOLDOWN_CRITICAL ]]; then
-		send_email_immediately "$type" "$current_disk_usage" "$path"
+		send_email "$type" "$current_disk_usage" "$path"
 	elif [[ $type == "Critical" ]]; then
 		cooldown_remaining=$((COOLDOWN_CRITICAL - time_diff))
 		echo "$(date '+%Y/%m/%d %H:%M:%S') [$type] Cooldown active for $cooldown_remaining seconds. Email not sent." >>$INFO_FILE
 	elif [[ $type == "Warning" && $time_diff -ge $COOLDOWN_WARNING ]]; then
-		send_email_immediately "$type" "$current_disk_usage" "$path"
+		send_email "$type" "$current_disk_usage" "$path"
 	elif [[ $type == "Warning" ]]; then
 		cooldown_remaining=$((COOLDOWN_WARNING - time_diff))
 		echo "$(date '+%Y/%m/%d %H:%M:%S') [$type] Cooldown active for $cooldown_remaining seconds. Email not sent." >>$INFO_FILE
